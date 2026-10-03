@@ -91,6 +91,22 @@ type Reader struct {
 	buf []byte // scratch space for reading from src
 	in  []byte // current chunk to decode; usually aliases buf
 
+	// singleStream selects explicit single-stream mode, in which decoding
+	// stops at the end of one Brotli stream instead of rejecting trailing
+	// bytes. streamDone records that the end of the stream has been reached.
+	singleStream bool
+	streamDone   bool
+	decodeFailed bool
+
+	// tailBytes holds the bytes already read ahead that belong to the data
+	// following the Brotli stream. pendingReadErr stores a non-nil error
+	// returned by src together with data that still had to be processed.
+	tailBytes      []byte
+	pendingReadErr error
+
+	// trailingTaken is set once TrailingReader has handed out the tail.
+	trailingTaken bool
+
 	state        int
 	loop_counter int
 	br           bitReader
