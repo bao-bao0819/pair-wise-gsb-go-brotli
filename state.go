@@ -91,6 +91,11 @@ type Reader struct {
 	buf []byte // scratch space for reading from src
 	in  []byte // current chunk to decode; usually aliases buf
 
+	options     ReaderOptions
+	pendingErr  error           // error returned together with the last fill's data
+	streamEnded bool            // the one stream has fully ended (SingleStream)
+	trailing    *trailingReader // bytes following the stream (SingleStream)
+
 	state        int
 	loop_counter int
 	br           bitReader
