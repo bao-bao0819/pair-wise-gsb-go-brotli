@@ -176,6 +176,11 @@ type Reader struct {
 	dictionary                  *dictionary
 	transforms                  *transforms
 	trivial_literal_contexts    [8]uint32
+
+	stats_observer       StatsObserver
+	stats_pending        MetablockStats
+	stats_pending_active bool
+	stats_completed      bool
 }
 
 func decoderStateInit(s *Reader) bool {
@@ -197,6 +202,10 @@ func decoderStateInit(s *Reader) bool {
 	s.pos = 0
 	s.rb_roundtrips = 0
 	s.partial_pos_out = 0
+
+	s.stats_pending = MetablockStats{}
+	s.stats_pending_active = false
+	s.stats_completed = false
 
 	clear(s.block_type_trees)
 	s.block_len_trees = nil

@@ -1353,6 +1353,10 @@ func copyUncompressedBlockToOutput(available_out *uint, next_out *[]byte, total_
 
 				s.pos += nbytes
 				s.meta_block_remaining_len -= nbytes
+				if s.stats_pending_active {
+					s.stats_pending.OutputLength += nbytes
+				}
+
 				if s.pos < 1<<s.window_bits {
 					if s.meta_block_remaining_len == 0 {
 						return decoderSuccess
@@ -1735,6 +1739,11 @@ CommandInner:
 				s.ringbuffer[pos] = byte(literal)
 			}
 
+			if s.stats_pending_active {
+				s.stats_pending.LiteralBytes++
+				s.stats_pending.OutputLength++
+			}
+
 			s.block_length[0]--
 			pos++
 			if pos == s.ringbuffer_size {
@@ -1789,6 +1798,11 @@ CommandInner:
 			}
 
 			s.ringbuffer[pos] = p1
+			if s.stats_pending_active {
+				s.stats_pending.LiteralBytes++
+				s.stats_pending.OutputLength++
+			}
+
 			s.block_length[0]--
 			pos++
 			if pos == s.ringbuffer_size {
@@ -1895,6 +1909,13 @@ CommandPostDecodeLiterals:
 
 				pos += int(len)
 				s.meta_block_remaining_len -= int(len)
+				if s.stats_pending_active {
+					s.stats_pending.DictionaryRefs++
+					s.stats_pending.DictionaryBytes += int(len)
+					s.stats_pending.OutputLength += int(len)
+					s.stats_pending.Transforms = append(s.stats_pending.Transforms, transform_idx)
+				}
+
 				if pos >= s.ringbuffer_size {
 					s.state = stateCommandPostWrite1
 					goto saveStateAndReturn
@@ -1917,6 +1938,11 @@ CommandPostDecodeLiterals:
 
 		s.dist_rb_idx++
 		s.meta_block_remaining_len -= i
+
+		if s.stats_pending_active {
+			s.stats_pending.CopyBytes += i
+			s.stats_pending.OutputLength += i
+		}
 
 		/* There are 32+ bytes of slack in the ring-buffer allocation.
 		   Also, we have 16 short codes, that make these 16 bytes irrelevant
@@ -2208,6 +2234,7 @@ func decoderDecompressStream(s *Reader, available_in *uint, next_in *[]byte, ava
 			}
 
 			if s.is_metadata != 0 {
+				s.statsBeginMetablock(MetablockMetadata)
 				s.state = stateMetadata
 				break
 			}
@@ -2219,10 +2246,12 @@ func decoderDecompressStream(s *Reader, available_in *uint, next_in *[]byte, ava
 
 			calculateRingBufferSize(s)
 			if s.is_uncompressed != 0 {
+				s.statsBeginMetablock(MetablockUncompressed)
 				s.state = stateUncompressed
 				break
 			}
 
+			s.statsBeginMetablock(MetablockCompressed)
 			s.loop_counter = 0
 			s.state = stateHuffmanCode0
 
@@ -2456,6 +2485,8 @@ func decoderDecompressStream(s *Reader, available_in *uint, next_in *[]byte, ava
 				break
 			}
 
+			s.statsEndMetablock()
+
 			decoderStateCleanupAfterMetablock(s)
 			if s.is_last_metablock == 0 {
 				s.state = stateMetablockBegin
@@ -2483,6 +2514,8 @@ func decoderDecompressStream(s *Reader, available_in *uint, next_in *[]byte, ava
 					break
 				}
 			}
+
+			s.statsNotifyComplete()
 
 			return saveErrorCode(s, result)
 		}

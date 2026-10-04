@@ -36,6 +36,7 @@ func (r *Reader) Reset(src io.Reader) error {
 		// undefined. Clear out everything but the buffers.
 		*r = Reader{
 			buf:              r.buf,
+			stats_observer:   r.stats_observer,
 			block_type_trees: r.block_type_trees,
 			literal_hgroup: huffmanTreeGroup{
 				htrees: r.literal_hgroup.htrees,
@@ -54,6 +55,9 @@ func (r *Reader) Reset(src io.Reader) error {
 
 	decoderStateInit(r)
 	r.src = src
+	if rs, ok := r.stats_observer.(statsResetObserver); ok {
+		rs.ResetStats()
+	}
 	if r.buf == nil {
 		r.buf = make([]byte, readBufSize)
 	}
