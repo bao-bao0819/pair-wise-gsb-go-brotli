@@ -21,15 +21,20 @@ func (e *Encoder) Encode(dst []byte, src []byte, matches []matchfinder.Match, la
 		e.wroteHeader = true
 	}
 
-	if len(src) == 0 {
-		if lastBlock {
-			e.bw.writeBits(2, 3) // islast + isempty
-			e.bw.jumpToByteBoundary()
-			return e.bw.dst
-		}
-		return dst
+	if len(src) != 0 {
+		e.encodeMetaBlock(&e.bw, src, matches)
 	}
 
+	if lastBlock {
+		e.bw.writeBits(2, 3) // islast + isempty
+		e.bw.jumpToByteBoundary()
+	}
+	return e.bw.dst
+}
+
+// encodeMetaBlock writes src as a single compressed meta-block (with ISLAST
+// clear) to bw. It requires 0 < len(src) <= 1<<24.
+func (e *Encoder) encodeMetaBlock(bw *bitWriter, src []byte, matches []matchfinder.Match) {
 	var literalHisto [256]uint32
 	var commandHisto [704]uint32
 	var distanceHisto [64]uint32
@@ -104,20 +109,20 @@ func (e *Encoder) Encode(dst []byte, src []byte, matches []matchfinder.Match, la
 		pos += m.Unmatched + m.Length
 	}
 
-	storeMetaBlockHeaderBW(uint(len(src)), false, &e.bw)
-	e.bw.writeBits(13, 0)
+	storeMetaBlockHeaderBW(uint(len(src)), false, bw)
+	bw.writeBits(13, 0)
 
 	var literalDepths [256]byte
 	var literalBits [256]uint16
-	buildAndStoreHuffmanTreeFastBW(literalHisto[:], uint(literalCount), 8, literalDepths[:], literalBits[:], &e.bw)
+	buildAndStoreHuffmanTreeFastBW(literalHisto[:], uint(literalCount), 8, literalDepths[:], literalBits[:], bw)
 
 	var commandDepths [704]byte
 	var commandBits [704]uint16
-	buildAndStoreHuffmanTreeFastBW(commandHisto[:], uint(commandCount), 10, commandDepths[:], commandBits[:], &e.bw)
+	buildAndStoreHuffmanTreeFastBW(commandHisto[:], uint(commandCount), 10, commandDepths[:], commandBits[:], bw)
 
 	var distanceDepths [64]byte
 	var distanceBits [64]uint16
-	buildAndStoreHuffmanTreeFastBW(distanceHisto[:], uint(distanceCount), 6, distanceDepths[:], distanceBits[:], &e.bw)
+	buildAndStoreHuffmanTreeFastBW(distanceHisto[:], uint(distanceCount), 6, distanceDepths[:], distanceBits[:], bw)
 
 	pos = 0
 	for i, m := range matches {
@@ -128,36 +133,30 @@ func (e *Encoder) Encode(dst []byte, src []byte, matches []matchfinder.Match, la
 			copyCode = 2
 		}
 		command := combineLengthCodes(insertCode, copyCode, i > 0 && m.Distance == matches[i-1].Distance)
-		e.bw.writeBits(uint(commandDepths[command]), uint64(commandBits[command]))
+		bw.writeBits(uint(commandDepths[command]), uint64(commandBits[command]))
 		if kInsExtra[insertCode] > 0 {
-			e.bw.writeBits(uint(kInsExtra[insertCode]), uint64(m.Unmatched)-uint64(kInsBase[insertCode]))
+			bw.writeBits(uint(kInsExtra[insertCode]), uint64(m.Unmatched)-uint64(kInsBase[insertCode]))
 		}
 		if kCopyExtra[copyCode] > 0 {
-			e.bw.writeBits(uint(kCopyExtra[copyCode]), uint64(m.Length)-uint64(kCopyBase[copyCode]))
+			bw.writeBits(uint(kCopyExtra[copyCode]), uint64(m.Length)-uint64(kCopyBase[copyCode]))
 		}
 
 		if m.Unmatched > 0 {
 			for _, c := range src[pos : pos+m.Unmatched] {
-				e.bw.writeBits(uint(literalDepths[c]), uint64(literalBits[c]))
+				bw.writeBits(uint(literalDepths[c]), uint64(literalBits[c]))
 			}
 		}
 
 		if command >= 128 && m.Length != 0 {
 			distCode := e.distCache[i]
-			e.bw.writeBits(uint(distanceDepths[distCode.code]), uint64(distanceBits[distCode.code]))
+			bw.writeBits(uint(distanceDepths[distCode.code]), uint64(distanceBits[distCode.code]))
 			if distCode.nExtra > 0 {
-				e.bw.writeBits(distCode.nExtra, distCode.extraBits)
+				bw.writeBits(distCode.nExtra, distCode.extraBits)
 			}
 		}
 
 		pos += m.Unmatched + m.Length
 	}
-
-	if lastBlock {
-		e.bw.writeBits(2, 3) // islast + isempty
-		e.bw.jumpToByteBoundary()
-	}
-	return e.bw.dst
 }
 
 type distanceCode struct {

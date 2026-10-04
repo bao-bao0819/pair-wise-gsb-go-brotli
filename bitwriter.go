@@ -54,3 +54,20 @@ func (w *bitWriter) jumpToByteBoundary() {
 	w.bits = 0
 	w.dst = dst
 }
+
+// flushWholeBytes appends any whole bytes held in the bit buffer to dst,
+// leaving at most 7 unwritten bits buffered. Unlike jumpToByteBoundary it
+// does not pad the stream, so it is safe to use in the middle of a stream.
+func (w *bitWriter) flushWholeBytes() {
+	for w.nbits >= 8 {
+		w.dst = append(w.dst, byte(w.bits))
+		w.bits >>= 8
+		w.nbits -= 8
+	}
+}
+
+// totalBits returns the number of bits written so far, including the bits
+// still held in the bit buffer.
+func (w *bitWriter) totalBits() uint64 {
+	return uint64(len(w.dst))*8 + uint64(w.nbits)
+}

@@ -17,3 +17,22 @@ on levels 0 to 9.
 
 The new APIs are currently considered experimental,
 and are not covered by any SemVer compatibility guarantees.
+
+## Bounded output size
+
+`MaxEncodedSize(srcLen, options, maxFlushes)` returns a guaranteed upper
+bound on the encoded size of a payload, so a service can allocate its
+output buffer up front instead of estimating from samples. The bound
+applies to streams produced by `NewBoundedWriter` with the same
+`WriterOptions`, at most `maxFlushes` calls to `Flush`, and a final
+`Close`. Unsupported parameters, an unknown flush count, or arithmetic
+overflow are reported as errors rather than a plausible-looking number.
+
+`BoundedWriter` is an opt-in encoding mode that makes the bound provable:
+it cuts the payload into meta-blocks of at most 2^20 bytes and emits each
+block compressed only when that is strictly smaller than the block's legal
+uncompressed representation, so local encoding can never exceed the bound
+and output is never truncated. The bound itself is derived term by term
+from the RFC 7932 container format (stream header, meta-block length/type
+fields, uncompressed-block fallback, byte alignment, termination marker);
+see the documentation in `bounded.go` for the full formula.
