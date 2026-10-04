@@ -109,6 +109,11 @@ type Writer struct {
 	stream_state_             int
 	is_last_block_emitted_    bool
 	is_initialized_           bool
+
+	/* Buffer for bounded encoding mode (WriterOptions.Bounded), quality
+	   levels 0 and 1: input is accumulated here and emitted in segments of
+	   one block_size_limit bytes. */
+	segBuf []byte
 }
 
 func inputBlockSize(s *Writer) uint {
@@ -624,6 +629,7 @@ func encoderInitState(s *Writer) {
 	s.stream_state_ = streamProcessing
 	s.is_last_block_emitted_ = false
 	s.is_initialized_ = false
+	s.segBuf = s.segBuf[:0]
 
 	ringBufferInit(&s.ringbuffer_)
 

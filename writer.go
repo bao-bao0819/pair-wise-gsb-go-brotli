@@ -21,6 +21,15 @@ type WriterOptions struct {
 	// LGWin is the base 2 logarithm of the sliding window size.
 	// Range is 10 to 24. 0 indicates automatic configuration based on Quality.
 	LGWin int
+	// Bounded selects bounded encoding mode: the writer guarantees that the
+	// total output for n payload bytes and f calls to Flush never exceeds
+	// MaxEncodedSize(n, options, f) bytes. Bounded mode only changes the
+	// behavior of the quality 0 and 1 fast paths, which otherwise emit one
+	// meta-block per Write call: input is buffered and emitted in segments
+	// of 1<<LGWin bytes so that the meta-block count depends only on the
+	// total input size and the number of flushes. For quality 2 and above
+	// the encoder already satisfies the bound and Bounded is a no-op.
+	Bounded bool
 }
 
 var (
@@ -73,6 +82,9 @@ func (w *Writer) writeChunk(p []byte, op int) (n int, err error) {
 	if w.err != nil {
 		return 0, w.err
 	}
+	if w.options.Bounded && sanitizedQuality(w.options.Quality) <= fastTwoPassCompressionQuality {
+		return w.writeChunkBounded(p, op)
+	}
 
 	for {
 		availableIn := uint(len(p))
@@ -89,6 +101,80 @@ func (w *Writer) writeChunk(p []byte, op int) (n int, err error) {
 			return n, w.err
 		}
 	}
+}
+
+// writeChunkBounded implements bounded encoding mode for quality levels 0
+// and 1. The fast fragment encoder emits one meta-block per
+// encoderCompressStream call, so without buffering the meta-block count
+// (and with it the per-block header overhead) would depend on the caller's
+// Write pattern. Here input is accumulated and emitted in segments of one
+// block_size_limit (1<<LGWin) bytes, so the number of emitted meta-blocks
+// is at most size/(1<<LGWin) + flushes + 1 regardless of the Write pattern.
+// Each segment is consumed by a single encoderCompressStream call, and the
+// fragment encoder's uncompressed-block fallback keeps every emitted
+// meta-block within maxMetaBlockOverheadBits bits on top of its payload.
+func (w *Writer) writeChunkBounded(p []byte, op int) (n int, err error) {
+	n = len(p)
+	segSize := 1 << uint(sanitizedLGWin(w.options.LGWin))
+
+	// Emit full segments straight from p while the buffer is empty.
+	for len(w.segBuf) == 0 && len(p) >= segSize {
+		if !w.emitBoundedSegment(p[:segSize], operationProcess) {
+			return n, errEncode
+		}
+		p = p[segSize:]
+	}
+	if len(p) > 0 {
+		w.segBuf = append(w.segBuf, p...)
+		consumed := 0
+		for len(w.segBuf)-consumed >= segSize {
+			if !w.emitBoundedSegment(w.segBuf[consumed:][:segSize], operationProcess) {
+				return n, errEncode
+			}
+			consumed += segSize
+		}
+		if consumed > 0 {
+			w.segBuf = append(w.segBuf[:0], w.segBuf[consumed:]...)
+		}
+	}
+
+	switch op {
+	case operationFlush:
+		// Emit the buffered partial segment, then the byte-alignment
+		// padding block.
+		if len(w.segBuf) > 0 {
+			if !w.emitBoundedSegment(w.segBuf, operationProcess) {
+				return n, errEncode
+			}
+			w.segBuf = w.segBuf[:0]
+		}
+		if !w.emitBoundedSegment(nil, operationFlush) {
+			return n, errEncode
+		}
+	case operationFinish:
+		// Emit the remaining partial segment as the last meta-block (or an
+		// empty last meta-block if nothing is buffered).
+		if !w.emitBoundedSegment(w.segBuf, operationFinish) {
+			return n, errEncode
+		}
+		w.segBuf = w.segBuf[:0]
+	}
+	return n, w.err
+}
+
+// emitBoundedSegment feeds one segment (at most one block_size_limit) to
+// the encoder in a single call and verifies that it is fully consumed, so
+// that exactly one meta-block is emitted per segment.
+func (w *Writer) emitBoundedSegment(seg []byte, op int) bool {
+	if w.err != nil {
+		return false
+	}
+	availableIn := uint(len(seg))
+	nextIn := seg
+	if !encoderCompressStream(w, op, &availableIn, &nextIn) {
+		return false
+	}
+	return availableIn == 0 && w.err == nil
 }
 
 // Flush outputs encoded data for all input provided to Write. The resulting
