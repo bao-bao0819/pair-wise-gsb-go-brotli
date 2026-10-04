@@ -176,6 +176,12 @@ type Reader struct {
 	dictionary                  *dictionary
 	transforms                  *transforms
 	trivial_literal_contexts    [8]uint32
+
+	stats_observer     StatsObserver
+	stats_cur          *MetablockStats
+	stats_ended        bool
+	stats_cmd_literals int
+	stats_cmd_copy     int
 }
 
 func decoderStateInit(s *Reader) bool {

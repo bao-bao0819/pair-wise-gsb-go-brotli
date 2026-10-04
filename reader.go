@@ -31,11 +31,13 @@ func NewReader(src io.Reader) *Reader {
 // This permits reusing a Reader rather than allocating a new one.
 // Error is always nil
 func (r *Reader) Reset(src io.Reader) error {
+	statsObserver := r.stats_observer
 	if r.error_code < 0 {
 		// There was an unrecoverable error, leaving the Reader's state
 		// undefined. Clear out everything but the buffers.
 		*r = Reader{
 			buf:              r.buf,
+			stats_observer:   statsObserver,
 			block_type_trees: r.block_type_trees,
 			literal_hgroup: huffmanTreeGroup{
 				htrees: r.literal_hgroup.htrees,
@@ -54,6 +56,8 @@ func (r *Reader) Reset(src io.Reader) error {
 
 	decoderStateInit(r)
 	r.src = src
+	r.stats_observer = statsObserver
+	r.statsReset()
 	if r.buf == nil {
 		r.buf = make([]byte, readBufSize)
 	}
@@ -69,6 +73,9 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 				readErr = io.ErrUnexpectedEOF
 			}
 			// If readErr is `nil`, we just proxy underlying stream behavior.
+			if readErr != nil {
+				r.statsStreamEnd(readErr)
+			}
 			return 0, readErr
 		}
 		r.in = r.buf[:m]
@@ -91,11 +98,15 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		switch result {
 		case decoderResultSuccess:
 			if len(r.in) > 0 {
+				r.statsStreamEnd(errExcessiveInput)
 				return n, errExcessiveInput
 			}
+			r.statsStreamEnd(nil)
 			return n, nil
 		case decoderResultError:
-			return n, decodeError(decoderGetErrorCode(r))
+			decodeErr := decodeError(decoderGetErrorCode(r))
+			r.statsStreamEnd(decodeErr)
+			return n, decodeErr
 		case decoderResultNeedsMoreOutput:
 			if n == 0 {
 				return 0, io.ErrShortBuffer
@@ -105,6 +116,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		}
 
 		if len(r.in) != 0 {
+			r.statsStreamEnd(errInvalidState)
 			return 0, errInvalidState
 		}
 
@@ -118,7 +130,11 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		if encN == 0 {
 			// Not enough data to complete decoding.
 			if err == io.EOF {
+				r.statsStreamEnd(io.ErrUnexpectedEOF)
 				return 0, io.ErrUnexpectedEOF
+			}
+			if err != nil {
+				r.statsStreamEnd(err)
 			}
 			return 0, err
 		}

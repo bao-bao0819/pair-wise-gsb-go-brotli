@@ -1351,6 +1351,7 @@ func copyUncompressedBlockToOutput(available_out *uint, next_out *[]byte, total_
 				/* Copy remaining bytes from s->br.buf_ to ring-buffer. */
 				copyBytes(s.ringbuffer[s.pos:], &s.br, uint(nbytes))
 
+				s.statsUncompressedByte(nbytes)
 				s.pos += nbytes
 				s.meta_block_remaining_len -= nbytes
 				if s.pos < 1<<s.window_bits {
@@ -1624,6 +1625,7 @@ func checkInputAmountMaybeSafe(safe int, br *bitReader, num uint) bool {
 func processCommandsInternal(safe int, s *Reader) int {
 	var pos int = s.pos
 	var i int = s.loop_counter
+	var copy_len int
 	var result int = decoderSuccess
 	var br *bitReader = &s.br
 	var hc []huffmanCode
@@ -1684,6 +1686,8 @@ CommandBegin:
 		readCommand(s, br, &i)
 	}
 
+	s.statsBeginCommand()
+
 	if i == 0 {
 		goto CommandPostDecodeLiterals
 	}
@@ -1735,6 +1739,7 @@ CommandInner:
 				s.ringbuffer[pos] = byte(literal)
 			}
 
+			s.statsLiteralByte()
 			s.block_length[0]--
 			pos++
 			if pos == s.ringbuffer_size {
@@ -1789,6 +1794,7 @@ CommandInner:
 			}
 
 			s.ringbuffer[pos] = p1
+			s.statsLiteralByte()
 			s.block_length[0]--
 			pos++
 			if pos == s.ringbuffer_size {
@@ -1804,6 +1810,7 @@ CommandInner:
 	}
 
 	if s.meta_block_remaining_len <= 0 {
+		s.statsCommitCommand(nil)
 		s.state = stateMetablockDone
 		goto saveStateAndReturn
 	}
@@ -1893,6 +1900,11 @@ CommandPostDecodeLiterals:
 					len = transformDictionaryWord(s.ringbuffer[pos:], word, int(len), trans, transform_idx)
 				}
 
+				s.statsCommitCommand(&DictionaryReference{
+					Length:    len,
+					WordIndex: word_idx,
+					Transform: transform_idx,
+				})
 				pos += int(len)
 				s.meta_block_remaining_len -= int(len)
 				if pos >= s.ringbuffer_size {
@@ -1917,6 +1929,8 @@ CommandPostDecodeLiterals:
 
 		s.dist_rb_idx++
 		s.meta_block_remaining_len -= i
+		copy_len = i
+		s.stats_cmd_copy = copy_len
 
 		/* There are 32+ bytes of slack in the ring-buffer allocation.
 		   Also, we have 16 short codes, that make these 16 bytes irrelevant
@@ -1943,6 +1957,8 @@ CommandPostDecodeLiterals:
 				copy(copy_dst[16:], copy_src[16:][:16])
 			}
 		}
+
+		s.statsCommitCommand(nil)
 	}
 
 	if s.meta_block_remaining_len <= 0 {
@@ -1956,6 +1972,10 @@ CommandPostDecodeLiterals:
 CommandPostWrapCopy:
 	{
 		var wrap_guard int = s.ringbuffer_size - pos
+		/* i is reloaded from loop_counter when a copy resumes after an
+		   output buffer flush; remember the full copy length so the
+		   command is counted exactly once regardless of resumes. */
+		copy_len = i
 		for {
 			i--
 			if i < 0 {
@@ -1970,6 +1990,9 @@ CommandPostWrapCopy:
 			}
 		}
 	}
+
+	s.stats_cmd_copy = copy_len
+	s.statsCommitCommand(nil)
 
 	if s.meta_block_remaining_len <= 0 {
 		/* Next metablock, if any. */
@@ -2208,21 +2231,25 @@ func decoderDecompressStream(s *Reader, available_in *uint, next_in *[]byte, ava
 			}
 
 			if s.is_metadata != 0 {
+				s.statsBeginMetablock(MetablockMetadata)
 				s.state = stateMetadata
 				break
 			}
 
 			if s.meta_block_remaining_len == 0 {
+				s.statsBeginMetablock(MetablockCompressed)
 				s.state = stateMetablockDone
 				break
 			}
 
 			calculateRingBufferSize(s)
 			if s.is_uncompressed != 0 {
+				s.statsBeginMetablock(MetablockUncompressed)
 				s.state = stateUncompressed
 				break
 			}
 
+			s.statsBeginMetablock(MetablockCompressed)
 			s.loop_counter = 0
 			s.state = stateHuffmanCode0
 
@@ -2244,6 +2271,7 @@ func decoderDecompressStream(s *Reader, available_in *uint, next_in *[]byte, ava
 			}
 
 			if result == decoderSuccess {
+				s.statsFinishMetablock()
 				s.state = stateMetablockDone
 			}
 
@@ -2456,6 +2484,7 @@ func decoderDecompressStream(s *Reader, available_in *uint, next_in *[]byte, ava
 				break
 			}
 
+			s.statsFinishMetablock()
 			decoderStateCleanupAfterMetablock(s)
 			if s.is_last_metablock == 0 {
 				s.state = stateMetablockBegin
